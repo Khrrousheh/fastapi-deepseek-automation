@@ -1,43 +1,34 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import httpx
 from app.config import settings
+import httpx
+import logging
 
 app = FastAPI()
-
-class PromptInput(BaseModel):
-    prompt: str
-    max_tokens: int = 100
-
+logger = logging.getLogger(__name__)
 
 @app.post("/generate")
-async def generate_text(data: PromptInput):
+async def generate_text(prompt: str):
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{settings.DEEPSEEK_BASE_URL}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY.get_secret_value()}",  # Access secret
+                    "Content-Type": "application/json",
                 },
                 json={
                     "model": settings.DEEPSEEK_MODEL,
-                    "messages": [{"role": "user", "content": data.prompt}],
-                    "max_tokens": data.max_tokens
+                    "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=30.0
+                timeout=30.0,
             )
+            response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx
+            return response.json()
 
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=response.text
-                )
+    except httpx.HTTPStatusError as e:
+        logger.error(f"DeepSeek API error: {e.response.text}")
+        raise HTTPException(status_code=502, detail="API request failed")
 
-            result = response.json()
-            return {"response": result['choices'][0]['message']['content'].strip()}
-
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Request timeout")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
